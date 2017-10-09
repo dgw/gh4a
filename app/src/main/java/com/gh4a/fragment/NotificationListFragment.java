@@ -14,6 +14,7 @@ import android.view.Menu;
 import android.view.MenuInflater;
 import android.view.MenuItem;
 
+import com.gh4a.ApiRequestException;
 import com.gh4a.BackgroundTask;
 import com.gh4a.Gh4Application;
 import com.gh4a.R;
@@ -34,7 +35,6 @@ import com.meisolsson.githubsdk.model.Repository;
 import com.meisolsson.githubsdk.model.request.NotificationReadRequest;
 import com.meisolsson.githubsdk.service.activity.NotificationService;
 
-import java.io.IOException;
 import java.util.Date;
 
 public class NotificationListFragment extends LoadingListFragmentBase implements
@@ -268,7 +268,7 @@ public class NotificationListFragment extends LoadingListFragmentBase implements
         }
 
         @Override
-        protected Void run() throws IOException {
+        protected Void run() throws ApiRequestException {
             NotificationService service =
                     Gh4Application.get().getGitHubService(NotificationService.class);
 
@@ -302,7 +302,7 @@ public class NotificationListFragment extends LoadingListFragmentBase implements
         }
 
         @Override
-        protected Void run() throws IOException {
+        protected Void run() throws ApiRequestException {
             NotificationService service =
                     Gh4Application.get().getGitHubService(NotificationService.class);
 

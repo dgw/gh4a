@@ -6,18 +6,19 @@ import android.support.v4.app.FragmentActivity;
 import android.text.TextUtils;
 import android.util.Pair;
 
+import com.gh4a.ApiRequestException;
 import com.gh4a.Gh4Application;
 import com.gh4a.activities.FileViewerActivity;
 import com.gh4a.activities.RepositoryActivity;
 import com.gh4a.utils.ApiHelpers;
 import com.meisolsson.githubsdk.model.Branch;
-import com.meisolsson.githubsdk.model.Page;
 import com.meisolsson.githubsdk.service.repositories.RepositoryBranchService;
 import com.meisolsson.githubsdk.service.repositories.RepositoryService;
 
-import java.io.IOException;
 import java.util.List;
 import java.util.regex.Pattern;
+
+import io.reactivex.Single;
 
 public class RefPathDisambiguationTask extends UrlLoadTask {
     private static final Pattern SHA1_PATTERN = Pattern.compile("[a-z0-9]{40}");
@@ -58,7 +59,7 @@ public class RefPathDisambiguationTask extends UrlLoadTask {
     }
 
     @Override
-    protected Intent run() throws Exception {
+    protected Intent run() throws ApiRequestException {
         Pair<String, String> refAndPath = resolve();
         if (refAndPath == null) {
             return null;
@@ -93,55 +94,49 @@ public class RefPathDisambiguationTask extends UrlLoadTask {
         return null;
     }
 
+    private Single<Pair<String, String>> matchBranch(Single<List<Branch>> input) {
+        return input.map(branches -> {
+            for (Branch branch : branches) {
+                if (TextUtils.equals(mRefAndPath, branch.name())) {
+                    return Pair.create(branch.name(), null);
+                } else {
+                    String nameWithSlash = branch.name() + "/";
+                    if (mRefAndPath.startsWith(nameWithSlash)) {
+                        return Pair.create(branch.name(),
+                                mRefAndPath.substring(nameWithSlash.length()));
+                    }
+                }
+            }
+            return null;
+        });
+    }
+
     // returns ref, path
-    private Pair<String, String> resolve() throws Exception {
+    private Pair<String, String> resolve() throws ApiRequestException {
         final Gh4Application app = Gh4Application.get();
         final RepositoryBranchService branchService =
                 app.getGitHubService(RepositoryBranchService.class);
         final RepositoryService repoService = app.getGitHubService(RepositoryService.class);
 
         // try branches first
-        List<Branch> branches = ApiHelpers.Pager.fetchAllPages(new ApiHelpers.Pager.PageProvider<Branch>() {
-            @Override
-            public Page<Branch> providePage(long page) throws IOException {
-                return ApiHelpers.throwOnFailure(
-                        branchService.getBranches(mRepoOwner, mRepoName, page).blockingGet());
-            }
-        });
-        for (Branch branch : branches) {
-            if (TextUtils.equals(mRefAndPath, branch.name())) {
-                return Pair.create(branch.name(), null);
-            } else {
-                String nameWithSlash = branch.name() + "/";
-                if (mRefAndPath.startsWith(nameWithSlash)) {
-                    return Pair.create(branch.name(),
-                            mRefAndPath.substring(nameWithSlash.length()));
-                }
-            }
+        Pair<String, String> result = ApiHelpers.PageIterator
+                .toSingle(page -> branchService.getBranches(mRepoOwner, mRepoName, page))
+                .compose(response -> matchBranch(response))
+                .blockingGet();
+        if (result != null) {
+            return result;
         }
-
         if (mActivity.isFinishing()) {
             return null;
         }
 
         // and tags second
-        List<Branch> tags = ApiHelpers.Pager.fetchAllPages(new ApiHelpers.Pager.PageProvider<Branch>() {
-            @Override
-            public Page<Branch> providePage(long page) throws IOException {
-                return ApiHelpers.throwOnFailure(
-                        repoService.getTags(mRepoOwner, mRepoName, page).blockingGet());
-            }
-        });
-        for (Branch tag : tags) {
-            if (TextUtils.equals(mRefAndPath, tag.name())) {
-                return Pair.create(tag.name(), null);
-            } else {
-                String nameWithSlash = tag.name() + "/";
-                if (mRefAndPath.startsWith(nameWithSlash)) {
-                    return Pair.create(tag.name(),
-                            mRefAndPath.substring(nameWithSlash.length()));
-                }
-            }
+        result = ApiHelpers.PageIterator
+                .toSingle(page -> repoService.getTags(mRepoOwner, mRepoName, page))
+                .compose(response -> matchBranch(response))
+                .blockingGet();
+        if (result != null) {
+            return result;
         }
 
         // at this point, the first item may still be a SHA1 - check with a simple regex
