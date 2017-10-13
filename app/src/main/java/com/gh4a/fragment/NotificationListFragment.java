@@ -1,7 +1,6 @@
 package com.gh4a.fragment;
 
 import android.content.Context;
-import android.content.DialogInterface;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
@@ -14,8 +13,6 @@ import android.view.Menu;
 import android.view.MenuInflater;
 import android.view.MenuItem;
 
-import com.gh4a.ApiRequestException;
-import com.gh4a.BackgroundTask;
 import com.gh4a.Gh4Application;
 import com.gh4a.R;
 import com.gh4a.activities.RepositoryActivity;
@@ -29,6 +26,7 @@ import com.gh4a.loader.NotificationListLoader;
 import com.gh4a.resolver.BrowseFilter;
 import com.gh4a.utils.ApiHelpers;
 import com.gh4a.utils.IntentUtils;
+import com.gh4a.utils.RxUtils;
 import com.meisolsson.githubsdk.model.NotificationSubject;
 import com.meisolsson.githubsdk.model.NotificationThread;
 import com.meisolsson.githubsdk.model.Repository;
@@ -36,6 +34,9 @@ import com.meisolsson.githubsdk.model.request.NotificationReadRequest;
 import com.meisolsson.githubsdk.service.activity.NotificationService;
 
 import java.util.Date;
+
+import io.reactivex.Single;
+import retrofit2.Response;
 
 public class NotificationListFragment extends LoadingListFragmentBase implements
         RootAdapter.OnItemClickListener<NotificationHolder>,NotificationAdapter.OnNotificationActionCallback {
@@ -140,7 +141,7 @@ public class NotificationListFragment extends LoadingListFragmentBase implements
         if (item.notification == null) {
             intent = RepositoryActivity.makeIntent(getActivity(), item.repository);
         } else {
-            new MarkReadTask(null, item.notification).schedule();
+            markAsRead(null, item.notification);
 
             NotificationSubject subject = item.notification.subject();
             String url = subject.url();
@@ -174,13 +175,7 @@ public class NotificationListFragment extends LoadingListFragmentBase implements
             case R.id.mark_all_as_read:
                 new AlertDialog.Builder(getActivity())
                         .setMessage(R.string.mark_all_as_read_question)
-                        .setPositiveButton(R.string.mark_all_as_read,
-                                new DialogInterface.OnClickListener() {
-                            @Override
-                            public void onClick(DialogInterface dialog, int which) {
-                                new MarkReadTask(null, null).schedule();
-                            }
-                        })
+                        .setPositiveButton(R.string.mark_all_as_read, (dialog, which) -> markAsRead(null, null))
                         .setNegativeButton(R.string.cancel, null)
                         .show();
                 return true;
@@ -219,23 +214,24 @@ public class NotificationListFragment extends LoadingListFragmentBase implements
 
             new AlertDialog.Builder(getActivity())
                     .setMessage(title)
-                    .setPositiveButton(R.string.mark_as_read,
-                            new DialogInterface.OnClickListener() {
-                        @Override
-                        public void onClick(DialogInterface dialog, int which) {
-                            new MarkReadTask(repository, null).schedule();
-                        }
-                    })
+                    .setPositiveButton(R.string.mark_as_read, (dialog, which) -> markAsRead(repository, null))
                     .setNegativeButton(R.string.cancel, null)
                     .show();
         } else {
-            new MarkReadTask(null, notificationHolder.notification).schedule();
+            markAsRead(null, notificationHolder.notification);
         }
     }
 
     @Override
     public void unsubscribe(NotificationHolder notificationHolder) {
-        new UnsubscribeTask(notificationHolder.notification).schedule();
+        NotificationThread notification = notificationHolder.notification;
+        NotificationService service =
+                Gh4Application.get().getGitHubService(NotificationService.class);
+
+        service.setNotificationThreadSubscription(notification.id(), false, true)
+                    .compose(RxUtils::throwOnFailure)
+                    .compose(RxUtils::doInBackground)
+                    .subscribe(result -> handleMarkAsRead(null, notification));
     }
 
     private void updateMenuItemVisibility() {
@@ -247,73 +243,35 @@ public class NotificationListFragment extends LoadingListFragmentBase implements
     }
 
     private void markAsRead(Repository repository, NotificationThread notification) {
+        NotificationService service =
+                Gh4Application.get().getGitHubService(NotificationService.class);
+
+        final Single<Response<Boolean>> responseSingle;
+        if (notification != null) {
+            responseSingle = service.markNotificationRead(notification.id());
+        } else {
+            NotificationReadRequest request = NotificationReadRequest.builder()
+                    .lastReadAt(mNotificationsLoadTime)
+                    .build();
+            if (repository != null) {
+                responseSingle = service.markAllRepositoryNotificationsRead(
+                        repository.owner().login(), repository.name(), request);
+            } else {
+                responseSingle = service.markAllNotificationsRead(request);
+            }
+        }
+
+        responseSingle.compose(RxUtils::throwOnFailure)
+                .compose(RxUtils::doInBackground)
+                .subscribe(result -> handleMarkAsRead(repository, notification), error -> {});
+    }
+
+    private void handleMarkAsRead(Repository repository, NotificationThread notification) {
         if (mAdapter.markAsRead(repository, notification)) {
             if (!mAll && !mParticipating) {
                 mCallback.setNotificationsIndicatorVisible(false);
             }
         }
         updateMenuItemVisibility();
-    }
-
-    private class MarkReadTask extends BackgroundTask<Void> {
-        @Nullable
-        private final Repository mRepository;
-        @Nullable
-        private final NotificationThread mNotification;
-
-        public MarkReadTask(@Nullable Repository repository, @Nullable NotificationThread notification) {
-            super(getActivity());
-            mRepository = repository;
-            mNotification = notification;
-        }
-
-        @Override
-        protected Void run() throws ApiRequestException {
-            NotificationService service =
-                    Gh4Application.get().getGitHubService(NotificationService.class);
-
-            if (mNotification != null) {
-                ApiHelpers.throwOnFailure(
-                        service.markNotificationRead(mNotification.id()).blockingGet());
-            } else if (mRepository != null) {
-                ApiHelpers.throwOnFailure(service.markAllRepositoryNotificationsRead(
-                        mRepository.owner().login(), mRepository.name(),
-                        NotificationReadRequest.builder().lastReadAt(mNotificationsLoadTime).build()).blockingGet());
-            } else {
-                ApiHelpers.throwOnFailure(service.markAllNotificationsRead(
-                        NotificationReadRequest.builder().lastReadAt(mNotificationsLoadTime).build()).blockingGet());
-            }
-
-            return null;
-        }
-
-        @Override
-        protected void onSuccess(Void result) {
-            markAsRead(mRepository, mNotification);
-        }
-    }
-
-    private class UnsubscribeTask extends BackgroundTask<Void> {
-        private final NotificationThread mNotification;
-
-        public UnsubscribeTask(NotificationThread notification) {
-            super(getActivity());
-            mNotification = notification;
-        }
-
-        @Override
-        protected Void run() throws ApiRequestException {
-            NotificationService service =
-                    Gh4Application.get().getGitHubService(NotificationService.class);
-
-            ApiHelpers.throwOnFailure(
-                    service.setNotificationThreadSubscription(mNotification.id(), false, true).blockingGet());
-            return null;
-        }
-
-        @Override
-        protected void onSuccess(Void result) {
-            markAsRead(null, mNotification);
-        }
     }
 }
