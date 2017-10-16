@@ -74,6 +74,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 import fr.castorflex.android.smoothprogressbar.SmoothProgressBar;
+import io.reactivex.Single;
+import io.reactivex.disposables.Disposable;
 
 public abstract class BaseActivity extends AppCompatActivity implements
         SwipeRefreshLayout.OnRefreshListener,
@@ -109,6 +111,8 @@ public abstract class BaseActivity extends AppCompatActivity implements
     private final int[] mProgressColors = new int[2];
     private Animator mHeaderTransition;
     private final Handler mHandler = new Handler();
+
+    private final List<Disposable> mDisposeOnStop = new ArrayList<>();
 
     private final Runnable mUpdateTaskDescriptionRunnable = new Runnable() {
         @TargetApi(21)
@@ -150,6 +154,10 @@ public abstract class BaseActivity extends AppCompatActivity implements
 
     public void handleLoadFailure(Exception e) {
         setErrorViewVisibility(true, e);
+    }
+
+    public void registerTemporarySubscription(Disposable disposable) {
+        mDisposeOnStop.add(disposable);
     }
 
     protected int getLeftNavigationDrawerMenuResource() {
@@ -406,6 +414,15 @@ public abstract class BaseActivity extends AppCompatActivity implements
         }
     }
 
+    @Override
+    protected void onStop() {
+        super.onStop();
+        for (Disposable d : mDisposeOnStop) {
+            d.dispose();
+        }
+        mDisposeOnStop.clear();
+    }
+
     @NonNull
     @Override
     public MenuInflater getMenuInflater() {
@@ -529,6 +546,10 @@ public abstract class BaseActivity extends AppCompatActivity implements
             }
         }
         return reloadedAny;
+    }
+
+    public <T> Single<T> handleError(Single<T> upstream) {
+        return upstream.doOnError(error -> setErrorViewVisibility(true, error));
     }
 
     protected void setErrorViewVisibility(boolean visible, Throwable e) {
